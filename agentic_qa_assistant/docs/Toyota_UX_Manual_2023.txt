@@ -1,0 +1,137 @@
+Toyota UX 2023 Owner's Manual
+
+Toyota UX 2023 Owner's Manual
+
+Chapter 1: Getting Started
+
+Welcome to your new Toyota UX 2023. This manual contains important information about your vehicle's features and maintenance requirements.
+
+Vehicle Overview:
+- Model: Toyota UX 250h (Hybrid)
+- Year: 2023
+- Engine: 2.0L 4-cylinder hybrid system
+- Total system power: 181 hp
+
+Chapter 2: Dashboard and Indicators
+
+Dashboard Warning Lights:
+- Engine Oil Pressure Warning Light (red oil can icon): Indicates low engine oil pressure. Stop driving immediately.
+- Battery Charge Warning Light (red battery icon): Indicates charging system malfunction.
+- Brake System Warning Light (red BRAKE text): Indicates brake system issue or parking brake engaged.
+- Tire Pressure Monitoring System (TPMS) Warning Light (yellow tire icon): Indicates low tire pressure in one or more tires.
+- Hybrid System Warning Light (yellow triangle with exclamation): Indicates hybrid system malfunction.
+
+Gauge Cluster:
+The multi-information display shows fuel economy, hybrid system status, trip information, and various vehicle settings.
+
+Chapter 3: Maintenance Schedule
+
+Regular Maintenance Intervals:
+- Oil and filter change: Every 10,000 miles or 12 months
+- Tire rotation: Every 5,000 miles
+- Air filter replacement: Every 30,000 miles
+- Cabin air filter: Every 20,000 miles
+- Brake fluid: Every 30,000 miles or 36 months
+- Coolant system service: Every 100,000 miles
+- Hybrid battery inspection: Every 60,000 miles
+
+Seasonal Maintenance:
+- Winter: Check antifreeze protection, inspect battery terminals, verify tire tread depth
+- Summer: Inspect cooling system, check A/C performance, verify proper tire pressure
+
+Chapter 4: Emergency Equipment and Procedures
+
+Tire Repair Kit Location:
+The tire repair kit is located in the cargo area under the rear floor panel. The kit includes:
+- Tire sealant and inflator
+- Air compressor with 12V power adapter
+- Valve stem removal tool
+- Instruction manual
+
+To access the tire repair kit:
+1. Open the rear hatch
+2. Lift the rear cargo floor panel
+3. The tire repair kit is stored in the left compartment
+
+Note: The UX does not come with a spare tire. Use the tire repair kit for temporary repairs only. Drive to the nearest tire service center for permanent repair or replacement.
+
+Emergency Triangle and First Aid Kit:
+Emergency triangle is stored in the same compartment as the tire repair kit. First aid kit is located in the glove compartment.
+
+Chapter 5: Hybrid System Information
+
+Hybrid System Operation:
+The UX hybrid system combines a gasoline engine with an electric motor for optimal fuel efficiency. The system automatically switches between electric-only mode, gasoline engine mode, and combined mode based on driving conditions.
+
+EV Mode:
+Press the EV button to operate in electric-only mode at low speeds (up to 25 mph) for short distances. EV mode is available when the hybrid battery has sufficient charge.
+
+Regenerative Braking:
+The hybrid system captures energy during braking and deceleration to recharge the hybrid battery. The energy flow display on the dashboard shows when regenerative braking is active.
+
+Chapter 6: Audio and Navigation System
+
+Infotainment Features:
+- 8-inch touchscreen display
+- Apple CarPlay and Android Auto compatibility
+- Bluetooth connectivity
+- USB charging ports (2 front, 2 rear)
+- Wireless device charging pad (available in Premium trim)
+
+Navigation System:
+The integrated navigation system provides turn-by-turn directions, real-time traffic updates, and points of interest search.
+
+Chapter 7: Safety Features
+
+Toyota Safety Sense 2.0:
+Standard safety features include:
+- Pre-Collision System (PCS)
+- Lane Departure Alert (LDA) with Steering Assist
+- Automatic High Beams (AHB)
+- Dynamic Radar Cruise Control (DRCC)
+
+Blind Spot Monitor:
+Available feature that alerts you to vehicles in your blind spots using indicator lights in the door mirrors.
+
+Chapter 8: Warranty Information
+
+Basic Coverage:
+- 3 years / 36,000 miles basic warranty
+- 5 years / 60,000 miles powertrain warranty
+- 8 years / 100,000 miles hybrid system warranty
+- 5 years / unlimited miles corrosion perforation warranty
+
+Maintenance Coverage:
+- 2 years / 25,000 miles complimentary maintenance (ToyotaCare)
+
+Roadside Assistance:
+- 2 years / unlimited miles roadside assistance included
+
+For warranty service, contact your authorized Toyota dealer.
+
+Chapter 9: Vehicle Specifications
+
+Dimensions:
+- Overall length: 177.2 inches
+- Overall width: 72.4 inches
+- Overall height: 64.6 inches
+- Wheelbase: 103.9 inches
+
+Capacities:
+- Fuel tank: 11.5 gallons
+- Engine oil: 4.4 quarts (with filter)
+- Coolant capacity: 6.8 quarts
+
+Tire Specifications:
+- Standard: 215/60R17
+- Available: 225/50R18
+
+Weight:
+- Curb weight: 3,560 pounds
+- Gross vehicle weight rating (GVWR): 4,255 pounds
+
+Performance:
+- 0-60 mph: 8.1 seconds
+- EPA fuel economy: 41 mpg city / 38 mpg highway / 39 mpg combined
+
+This manual provides essential information for safe operation and maintenance of your Toyota UX. For additional information, consult your Toyota dealer or visit toyota.com.

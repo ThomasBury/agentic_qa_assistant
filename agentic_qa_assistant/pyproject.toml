@@ -1,0 +1,28 @@
+[project]
+name = "agentic-qa-assistant"
+version = "0.1.0"
+description = "Agentic Q&A Assistant with SQL and RAG capabilities"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-ai",
+    "logfire", 
+    "openai",
+    "duckdb",
+    "faiss-cpu",
+    "sqlglot",
+    "pandas",
+    "numpy",
+    "pdfplumber",
+    "click",
+    "rich",
+    "python-dotenv",
+    "tiktoken",
+]
+
+[project.scripts]
+agentic-qa = "agentic_qa_assistant.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
