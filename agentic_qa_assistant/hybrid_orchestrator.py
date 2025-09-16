@@ -48,12 +48,14 @@ class HybridResult:
 class AnswerComposer:
     """Composes final answers from SQL and RAG results."""
     
-    def __init__(self, openai_client: OpenAI):
+    def __init__(self, openai_client: OpenAI, model_name: str = "gpt-5-mini"):
         """Initialize answer composer.
         
         Args:
             openai_client: OpenAI client instance
+            model_name: The OpenAI model to use for generation
         """
+        self.model_name = model_name
         self.client = openai_client
         
     def compose_hybrid_answer(self, question: str, sql_result: Optional[SqlResult], 
@@ -180,7 +182,7 @@ Please provide a comprehensive answer that combines both the quantitative data a
 
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -221,17 +223,18 @@ Please provide a comprehensive answer that combines both the quantitative data a
 class HybridOrchestrator:
     """Orchestrates parallel execution of SQL and RAG tools."""
     
-    def __init__(self, sql_tool: SqlTool, rag_tool: RagTool, openai_client: OpenAI):
+    def __init__(self, sql_tool: SqlTool, rag_tool: RagTool, openai_client: OpenAI, model_name: str = "gpt-5-mini"):
         """Initialize hybrid orchestrator.
         
         Args:
             sql_tool: SQL tool instance
             rag_tool: RAG tool instance  
             openai_client: OpenAI client instance
+            model_name: The OpenAI model to use for generation
         """
         self.sql_tool = sql_tool
         self.rag_tool = rag_tool
-        self.composer = AnswerComposer(openai_client)
+        self.composer = AnswerComposer(openai_client, model_name=model_name)
         
     def execute_hybrid(self, question: str, routing_decision: RoutingDecision) -> HybridResult:
         """Execute hybrid query using both SQL and RAG tools.

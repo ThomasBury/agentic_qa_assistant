@@ -34,14 +34,16 @@ logger = logging.getLogger(__name__)
 class AgenticAssistant:
     """Main assistant orchestrating all components."""
     
-    def __init__(self, data_dir: Path, docs_dir: Path, openai_api_key: str):
+    def __init__(self, data_dir: Path, docs_dir: Path, openai_api_key: str, model: str):
         """Initialize the assistant with all components.
         
         Args:
             data_dir: Directory containing CSV files
             docs_dir: Directory containing PDF/text documents
             openai_api_key: OpenAI API key
+            model: The OpenAI model to use for generation
         """
+        self.model = model
         self.console = console
         self.openai_client = OpenAI(api_key=openai_api_key)
         
@@ -74,10 +76,10 @@ class AgenticAssistant:
             
             # Initialize tools
             task = progress.add_task("Initializing tools...", total=None)
-            self.sql_tool = SqlTool(self.openai_client, self.db)
-            self.rag_tool = RagTool(self.openai_client, self.rag_pipeline)
-            self.router = SmartRouter(self.openai_client)
-            self.hybrid_orchestrator = HybridOrchestrator(self.sql_tool, self.rag_tool, self.openai_client)
+            self.sql_tool = SqlTool(self.openai_client, self.db, model_name=self.model)
+            self.rag_tool = RagTool(self.openai_client, self.rag_pipeline, model_name=self.model)
+            self.router = SmartRouter(self.openai_client, model_name=self.model)
+            self.hybrid_orchestrator = HybridOrchestrator(self.sql_tool, self.rag_tool, self.openai_client, model_name=self.model)
             progress.update(task, description="✓ All tools ready")
             
         # Show corpus stats
@@ -274,7 +276,8 @@ def cli():
               help='Show detailed execution trace')
 @click.option('--openai-key', envvar='OPENAI_API_KEY', 
               help='OpenAI API key (or set OPENAI_API_KEY env var)')
-def chat(data_dir: Path, docs_dir: Path, trace: bool, openai_key: str):
+@click.option('--model', default='gpt-5-mini', help='OpenAI model to use for generation.')
+def chat(data_dir: Path, docs_dir: Path, trace: bool, openai_key: str, model: str):
     """Interactive chat mode."""
     
     if not openai_key:
@@ -283,7 +286,8 @@ def chat(data_dir: Path, docs_dir: Path, trace: bool, openai_key: str):
         
     # Initialize assistant
     try:
-        assistant = AgenticAssistant(data_dir, docs_dir, openai_key)
+        console.print(f"🤖 Initializing assistant with model [bold cyan]{model}[/bold cyan]...")
+        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, model=model)
     except Exception as e:
         console.print(f"❌ [bold red]Initialization failed:[/bold red] {e}")
         sys.exit(1)
@@ -327,7 +331,8 @@ def chat(data_dir: Path, docs_dir: Path, trace: bool, openai_key: str):
               help='Show detailed execution trace')
 @click.option('--openai-key', envvar='OPENAI_API_KEY',
               help='OpenAI API key (or set OPENAI_API_KEY env var)')
-def ask(question: str, data_dir: Path, docs_dir: Path, trace: bool, openai_key: str):
+@click.option('--model', default='gpt-5-mini', help='OpenAI model to use for generation.')
+def ask(question: str, data_dir: Path, docs_dir: Path, trace: bool, openai_key: str, model: str):
     """Ask a single question."""
     
     if not openai_key:
@@ -336,7 +341,8 @@ def ask(question: str, data_dir: Path, docs_dir: Path, trace: bool, openai_key: 
         
     # Initialize assistant
     try:
-        assistant = AgenticAssistant(data_dir, docs_dir, openai_key)
+        console.print(f"🤖 Initializing assistant with model [bold cyan]{model}[/bold cyan]...")
+        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, model=model)
         assistant.answer_question(question, trace)
     except Exception as e:
         console.print(f"❌ [bold red]Error:[/bold red] {e}")
@@ -352,7 +358,8 @@ def ask(question: str, data_dir: Path, docs_dir: Path, trace: bool, openai_key: 
               default='./docs', help='Directory containing PDF/text documents')
 @click.option('--openai-key', envvar='OPENAI_API_KEY',
               help='OpenAI API key (or set OPENAI_API_KEY env var)')
-def demo(data_dir: Path, docs_dir: Path, openai_key: str):
+@click.option('--model', default='gpt-5-mini', help='OpenAI model to use for generation.')
+def demo(data_dir: Path, docs_dir: Path, openai_key: str, model: str):
     """Run the 4 demo questions from the PRD."""
     
     if not openai_key:
@@ -369,7 +376,8 @@ def demo(data_dir: Path, docs_dir: Path, openai_key: str):
     console.print("🎯 [bold]Running Demo Questions[/bold]")
     
     try:
-        assistant = AgenticAssistant(data_dir, docs_dir, openai_key)
+        console.print(f"🤖 Initializing assistant with model [bold cyan]{model}[/bold cyan]...")
+        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, model=model)
         
         for i, question in enumerate(demo_questions, 1):
             console.print(f"\n{'='*60}")

@@ -176,12 +176,14 @@ class RuleBasedRouter:
 class LLMRouter:
     """LLM-based router for ambiguous cases."""
     
-    def __init__(self, openai_client: OpenAI):
+    def __init__(self, openai_client: OpenAI, model_name: str = "gpt-5-nano"):
         """Initialize LLM router.
         
         Args:
             openai_client: OpenAI client instance
+            model_name: The OpenAI model to use for generation
         """
+        self.model_name = model_name
         self.client = openai_client
         
     def route(self, question: str) -> RoutingDecision:
@@ -217,7 +219,7 @@ Be conservative - if unsure between two options, choose HYBRID."""
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -264,15 +266,16 @@ Be conservative - if unsure between two options, choose HYBRID."""
 class SmartRouter:
     """Smart router that combines rule-based and LLM routing."""
     
-    def __init__(self, openai_client: OpenAI, confidence_threshold: float = 0.6):
+    def __init__(self, openai_client: OpenAI, confidence_threshold: float = 0.6, model_name: str = "gpt-5-nano"):
         """Initialize smart router.
         
         Args:
             openai_client: OpenAI client instance  
             confidence_threshold: Minimum confidence for rule-based routing
+            model_name: The OpenAI model to use for generation
         """
         self.rule_router = RuleBasedRouter()
-        self.llm_router = LLMRouter(openai_client)
+        self.llm_router = LLMRouter(openai_client, model_name=model_name)
         self.confidence_threshold = confidence_threshold
         
     def route(self, question: str) -> RoutingDecision:

@@ -38,13 +38,15 @@ class RagResult:
 class RagTool:
     """RAG tool that retrieves and synthesizes answers with citations."""
     
-    def __init__(self, openai_client: OpenAI, rag_pipeline: RagPipeline):
+    def __init__(self, openai_client: OpenAI, rag_pipeline: RagPipeline, model_name: str = "gpt-5-mini"):
         """Initialize RAG tool.
         
         Args:
             openai_client: OpenAI client instance
             rag_pipeline: RAG pipeline for document retrieval
+            model_name: The OpenAI model to use for generation
         """
+        self.model_name = model_name
         self.client = openai_client
         self.rag_pipeline = rag_pipeline
         
@@ -152,7 +154,7 @@ Please answer the question using only the information provided in the context ab
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=self.model_name,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}

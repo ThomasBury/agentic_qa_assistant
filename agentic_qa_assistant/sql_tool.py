@@ -154,10 +154,11 @@ class SqlValidator:
 class SqlGenerator:
     """Generates SQL queries from natural language questions."""
     
-    def __init__(self, openai_client: OpenAI, db_manager: DatabaseManager):
+    def __init__(self, openai_client: OpenAI, db_manager: DatabaseManager, model_name: str = "gpt-5-mini"):
         self.client = openai_client
         self.db_manager = db_manager
         self.schema_info = db_manager.get_schema_info()
+        self.model_name = model_name
         
     def generate_sql(self, question: str) -> str:
         """Generate SQL query from natural language question.
@@ -193,7 +194,7 @@ SQL: SELECT fs.year, fs.month, SUM(fs.contracts) AS contracts FROM FACT_SALES fs
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Using cost-efficient model
+                model=self.model_name,  # Using cost-efficient model
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
@@ -237,8 +238,8 @@ SQL: SELECT fs.year, fs.month, SUM(fs.contracts) AS contracts FROM FACT_SALES fs
 class SqlTool:
     """Main SQL tool that combines generation and validation."""
     
-    def __init__(self, openai_client: OpenAI, db_manager: DatabaseManager):
-        self.generator = SqlGenerator(openai_client, db_manager)
+    def __init__(self, openai_client: OpenAI, db_manager: DatabaseManager, model_name: str = "gpt-5-mini"):
+        self.generator = SqlGenerator(openai_client, db_manager, model_name=model_name)
         self.validator = SqlValidator()
         self.db_manager = db_manager
         
