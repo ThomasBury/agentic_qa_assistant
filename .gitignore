@@ -19,7 +19,6 @@ venv/
 
 # Local development and secrets
 .env
-.env.*
 .envrc
 secrets.env
 
