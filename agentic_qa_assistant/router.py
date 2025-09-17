@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from openai import OpenAI
+from .llm_utils import chat_params_for_model
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,21 @@ class ToolChoice(Enum):
 
 @dataclass
 class RoutingDecision:
-    """Routing decision with metadata."""
+    """Represents the output of a router's decision.
+
+    Attributes
+    ----------
+    decision : ToolChoice
+        The tool chosen by the router (SQL, RAG, or HYBRID).
+    confidence : float
+        A score from 0.0 to 1.0 indicating the router's confidence.
+    reasons : List[str]
+        A list of strings explaining the reasoning behind the decision.
+    matched_keywords : Dict[str, List[str]]
+        A dictionary of keyword categories and the keywords that were matched.
+    latency_ms : int
+        The time taken for the routing decision in milliseconds.
+    """
     decision: ToolChoice
     confidence: float  # 0.0 to 1.0
     reasons: List[str]
@@ -31,7 +46,17 @@ class RoutingDecision:
 
 
 class LLMRouterResponse(BaseModel):
-    """Pydantic model for LLM router response."""
+    """Pydantic model for parsing the JSON response from the LLM router.
+
+    Attributes
+    ----------
+    decision : str
+        The decision string from the LLM (e.g., "SQL", "RAG").
+    confidence : float
+        The confidence score from the LLM.
+    reasons : List[str]
+        The reasons provided by the LLM.
+    """
     decision: str
     confidence: float
     reasons: List[str]
@@ -41,8 +66,7 @@ class RuleBasedRouter:
     """Rule-based router using keyword matching."""
     
     def __init__(self):
-        """Initialize rule-based router with keyword patterns."""
-        
+        """Initialize the RuleBasedRouter with keyword patterns."""
         # SQL keywords (data/numeric/analytical queries)
         self.sql_keywords = {
             'time': ['monthly', 'yearly', 'quarterly', 'annual', 'period', 'time', 'temporal'],
@@ -73,13 +97,17 @@ class RuleBasedRouter:
         }
         
     def route(self, question: str) -> RoutingDecision:
-        """Route question using rule-based keyword matching.
-        
-        Args:
-            question: User question to route
-            
-        Returns:
-            Routing decision with confidence and reasoning
+        """Route a question based on keyword matching.
+
+        Parameters
+        ----------
+        question : str
+            The user's question to route.
+
+        Returns
+        -------
+        RoutingDecision
+            The decision object with confidence and reasoning.
         """
         start_time = time.time()
         question_lower = question.lower()
@@ -98,9 +126,17 @@ class RuleBasedRouter:
         reasons = []
         decision = None
         confidence = 0.0
+
+        # Heuristic: SQL requires 'metrics' or 'time' indicators to be considered "data";
+        # if we see RAG indicators but lack core SQL signals, prefer RAG directly.
+        has_sql_core = ('metrics' in matched_sql) or ('time' in matched_sql)
+        if rag_score >= 1 and not has_sql_core:
+            decision = ToolChoice.RAG
+            confidence = min(0.95, 0.7 + rag_score * 0.1)
+            reasons.append("RAG indicators present and no core SQL signals (metrics/time)")
         
-        # Strong indicators for hybrid
-        if hybrid_score > 0 and (sql_score > 0 or rag_score > 0):
+        # Strong indicators for hybrid (only if not forced to RAG above)
+        elif hybrid_score > 0 and (sql_score > 0 or rag_score > 0):
             decision = ToolChoice.HYBRID
             confidence = min(0.9, 0.6 + (hybrid_score + min(sql_score, rag_score)) * 0.1)
             reasons.append(f"Hybrid indicators: {list(matched_hybrid.keys())}")
@@ -109,8 +145,8 @@ class RuleBasedRouter:
             if rag_score > 0:
                 reasons.append(f"Also has RAG indicators: {list(matched_rag.keys())}")
                 
-        # Clear SQL preference
-        elif sql_score >= 2 and rag_score <= 1:
+        # Clear SQL preference (requires core metrics/time)
+        elif has_sql_core and sql_score >= 2 and rag_score <= 1:
             decision = ToolChoice.SQL
             confidence = min(0.95, 0.7 + sql_score * 0.1)
             reasons.append(f"Strong SQL indicators: {list(matched_sql.keys())}")
@@ -127,11 +163,11 @@ class RuleBasedRouter:
             confidence = 0.8
             reasons.append(f"Mixed SQL ({list(matched_sql.keys())}) and RAG ({list(matched_rag.keys())}) indicators")
             
-        # Weak signals - pick the stronger one
-        elif sql_score > rag_score:
+        # Weak signals - pick the stronger one (but require core for SQL)
+        elif sql_score > rag_score and has_sql_core:
             decision = ToolChoice.SQL
             confidence = 0.6
-            reasons.append(f"Weak SQL preference: {list(matched_sql.keys())}")
+            reasons.append(f"Weak SQL preference with core signals: {list(matched_sql.keys())}")
             
         elif rag_score > sql_score:
             decision = ToolChoice.RAG
@@ -158,7 +194,20 @@ class RuleBasedRouter:
         )
         
     def _match_keywords(self, text: str, keyword_groups: Dict[str, List[str]]) -> Dict[str, List[str]]:
-        """Match keywords in text and return grouped matches."""
+        """Match keywords from predefined groups within a text.
+
+        Parameters
+        ----------
+        text : str
+            The text to search within.
+        keyword_groups : Dict[str, List[str]]
+            A dictionary where keys are group names and values are lists of keywords.
+
+        Returns
+        -------
+        Dict[str, List[str]]
+            A dictionary of groups that had at least one keyword match.
+        """
         matches = {}
         
         for group, keywords in keyword_groups.items():
@@ -177,23 +226,30 @@ class LLMRouter:
     """LLM-based router for ambiguous cases."""
     
     def __init__(self, openai_client: OpenAI, model_name: str = "gpt-5-nano"):
-        """Initialize LLM router.
-        
-        Args:
-            openai_client: OpenAI client instance
-            model_name: The OpenAI model to use for generation
+        """Initialize the LLMRouter.
+
+        Parameters
+        ----------
+        openai_client : OpenAI
+            An initialized OpenAI client.
+        model_name : str, optional
+            The name of the OpenAI model to use for routing.
         """
         self.model_name = model_name
         self.client = openai_client
         
     def route(self, question: str) -> RoutingDecision:
-        """Route question using LLM classification.
-        
-        Args:
-            question: User question to route
-            
-        Returns:
-            Routing decision with confidence and reasoning
+        """Route a question using an LLM for classification.
+
+        Parameters
+        ----------
+        question : str
+            The user's question to route.
+
+        Returns
+        -------
+        RoutingDecision
+            The decision object based on the LLM's response.
         """
         start_time = time.time()
         
@@ -224,9 +280,8 @@ Be conservative - if unsure between two options, choose HYBRID."""
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
-                max_tokens=200,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                **chat_params_for_model(self.model_name, 200, temperature=0.1)
             )
             
             # Parse response
@@ -267,25 +322,37 @@ class SmartRouter:
     """Smart router that combines rule-based and LLM routing."""
     
     def __init__(self, openai_client: OpenAI, confidence_threshold: float = 0.6, model_name: str = "gpt-5-nano"):
-        """Initialize smart router.
-        
-        Args:
-            openai_client: OpenAI client instance  
-            confidence_threshold: Minimum confidence for rule-based routing
-            model_name: The OpenAI model to use for generation
+        """Initialize the SmartRouter.
+
+        Parameters
+        ----------
+        openai_client : OpenAI
+            An initialized OpenAI client.
+        confidence_threshold : float, optional
+            The confidence score above which the rule-based router's decision
+            is accepted without falling back to the LLM.
+        model_name : str, optional
+            The name of the OpenAI model to use for the LLM fallback.
         """
         self.rule_router = RuleBasedRouter()
         self.llm_router = LLMRouter(openai_client, model_name=model_name)
         self.confidence_threshold = confidence_threshold
         
     def route(self, question: str) -> RoutingDecision:
-        """Route question using hybrid rule-based + LLM approach.
-        
-        Args:
-            question: User question to route
-            
-        Returns:
-            Final routing decision
+        """Route a question using a hybrid rule-based and LLM approach.
+
+        It first tries the fast rule-based router. If the confidence is low,
+        it falls back to the more powerful LLM router.
+
+        Parameters
+        ----------
+        question : str
+            The user's question to route.
+
+        Returns
+        -------
+        RoutingDecision
+            The final routing decision.
         """
         logger.info(f"Routing question: {question[:50]}...")
         
@@ -317,12 +384,16 @@ class SmartRouter:
         return final_decision
         
     def batch_route(self, questions: List[str]) -> List[RoutingDecision]:
-        """Route multiple questions.
-        
-        Args:
-            questions: List of questions to route
-            
-        Returns:
-            List of routing decisions
+        """Route a batch of questions.
+
+        Parameters
+        ----------
+        questions : List[str]
+            A list of questions to route.
+
+        Returns
+        -------
+        List[RoutingDecision]
+            A list of routing decisions, one for each question.
         """
         return [self.route(q) for q in questions]

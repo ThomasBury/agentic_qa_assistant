@@ -1,21 +1,18 @@
 """Main CLI interface for the Agentic Q&A Assistant."""
-
-import os
 import sys
 import logging
 from pathlib import Path
-from typing import Optional
 import traceback
+from typing import Dict
 
 import click
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.markdown import Markdown
-from rich.text import Text
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, AuthenticationError
 
 from .database import create_database
 from .rag_pipeline import RagPipeline
@@ -32,18 +29,27 @@ logger = logging.getLogger(__name__)
 
 
 class AgenticAssistant:
-    """Main assistant orchestrating all components."""
-    
-    def __init__(self, data_dir: Path, docs_dir: Path, openai_api_key: str, model: str):
-        """Initialize the assistant with all components.
-        
-        Args:
-            data_dir: Directory containing CSV files
-            docs_dir: Directory containing PDF/text documents
-            openai_api_key: OpenAI API key
-            model: The OpenAI model to use for generation
+    """The main assistant class that orchestrates all components.
+
+    This class initializes the database, RAG pipeline, and all tools,
+    and handles the routing and execution of user questions.
+    """
+
+    def __init__(self, data_dir: Path, docs_dir: Path, openai_api_key: str, models: Dict[str, str]):
+        """Initialize the assistant and all its components.
+
+        Parameters
+        ----------
+        data_dir : Path
+            The directory containing the CSV data files.
+        docs_dir : Path
+            The directory containing the PDF/text documents for RAG.
+        openai_api_key : str
+            The OpenAI API key.
+        models : Dict[str, str]
+            A dictionary mapping tool roles to model names.
         """
-        self.model = model
+        self.models = models
         self.console = console
         self.openai_client = OpenAI(api_key=openai_api_key)
         
@@ -60,9 +66,13 @@ class AgenticAssistant:
             self.db = create_database(data_dir)
             progress.update(task, description="✓ Database loaded")
             
+            # Initialize cost tracker
+            from .cost_tracker import CostTracker
+            self.cost_tracker = CostTracker()
+            
             # Initialize RAG pipeline
             task = progress.add_task("Setting up RAG pipeline...", total=None)
-            self.rag_pipeline = RagPipeline(self.openai_client, Path("./vector_index"))
+            self.rag_pipeline = RagPipeline(self.openai_client, Path("./vector_index"), cost_tracker=self.cost_tracker)
             
             # Get all document files
             doc_files = []
@@ -76,10 +86,23 @@ class AgenticAssistant:
             
             # Initialize tools
             task = progress.add_task("Initializing tools...", total=None)
-            self.sql_tool = SqlTool(self.openai_client, self.db, model_name=self.model)
-            self.rag_tool = RagTool(self.openai_client, self.rag_pipeline, model_name=self.model)
-            self.router = SmartRouter(self.openai_client, model_name=self.model)
-            self.hybrid_orchestrator = HybridOrchestrator(self.sql_tool, self.rag_tool, self.openai_client, model_name=self.model)
+            self.sql_tool = SqlTool(self.openai_client, self.db, model_name=self.models.get("sql", "gpt-5-nano"), cost_tracker=self.cost_tracker)
+            # If a fast synthesis model is provided, pass it; otherwise default to gpt-4o-mini when primary is reasoning
+            synthesis_model = self.models.get("rag_synthesis")
+            self.rag_tool = RagTool(
+                self.openai_client,
+                self.rag_pipeline,
+                model_name=self.models.get("rag", "gpt-5-nano"),
+                cost_tracker=self.cost_tracker,
+                synthesis_model=synthesis_model
+            )
+            self.router = SmartRouter(self.openai_client, model_name=self.models.get("router", "gpt-5-nano"))
+            self.hybrid_orchestrator = HybridOrchestrator(
+                self.sql_tool,
+                self.rag_tool,
+                self.openai_client,
+                model_name=self.models.get("composition", "gpt-5-nano")
+            )
             progress.update(task, description="✓ All tools ready")
             
         # Show corpus stats
@@ -87,11 +110,14 @@ class AgenticAssistant:
         console.print(f"📊 Corpus: {stats['total_chunks']} chunks from {len(stats['sources'])} documents")
         
     def answer_question(self, question: str, show_trace: bool = False) -> None:
-        """Answer a user question using the appropriate tool(s).
-        
-        Args:
-            question: User question
-            show_trace: Whether to show detailed execution trace
+        """Route and answer a user's question, displaying the result.
+
+        Parameters
+        ----------
+        question : str
+            The user's question.
+        show_trace : bool, optional
+            Whether to display detailed execution trace information.
         """
         console.print(f"\n❓ [bold]Question:[/bold] {question}")
         
@@ -125,8 +151,15 @@ class AgenticAssistant:
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
                 
     def _execute_sql(self, question: str, show_trace: bool) -> None:
-        """Execute SQL-only question."""
-        
+        """Execute a question routed to the SQL tool and display the results.
+
+        Parameters
+        ----------
+        question : str
+            The user's question.
+        show_trace : bool
+            Whether to show detailed trace information.
+        """
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -163,13 +196,25 @@ class AgenticAssistant:
         # Show SQL used
         console.print("\n💾 [bold]SQL Query:[/bold]")
         console.print(Panel(result.sql_used, expand=False, border_style="blue"))
+
+        # Token usage summary if available
+        if hasattr(self, 'cost_tracker') and self.cost_tracker:
+            console.print("\n🔢 [bold]Token Usage:[/bold]")
+            console.print(Panel(self.cost_tracker.summary_text(), border_style="yellow"))
         
         # Show execution stats
         console.print(f"⏱️ Executed in {result.execution_ms}ms, returned {result.row_count} rows")
         
     def _execute_rag(self, question: str, show_trace: bool) -> None:
-        """Execute RAG-only question."""
-        
+        """Execute a question routed to the RAG tool and display the results.
+
+        Parameters
+        ----------
+        question : str
+            The user's question.
+        show_trace : bool
+            Whether to show detailed trace information.
+        """
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -196,8 +241,17 @@ class AgenticAssistant:
         console.print(f"⏱️ Retrieved {result.chunks_retrieved} chunks in {result.retrieval_ms}ms, synthesized in {result.synthesis_ms}ms")
         
     def _execute_hybrid(self, question: str, routing_decision, show_trace: bool) -> None:
-        """Execute hybrid question."""
-        
+        """Execute a question routed to the Hybrid orchestrator and display the results.
+
+        Parameters
+        ----------
+        question : str
+            The user's question.
+        routing_decision : RoutingDecision
+            The decision object from the router.
+        show_trace : bool
+            Whether to show detailed trace information.
+        """
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -213,6 +267,11 @@ class AgenticAssistant:
         console.print("\n🔀 [bold]Hybrid Answer:[/bold]")
         console.print(Panel(Markdown(result.answer), border_style="cyan"))
         
+        # Show token usage if available
+        if hasattr(self, 'cost_tracker') and self.cost_tracker:
+            console.print("\n🔢 [bold]Token Usage:[/bold]")
+            console.print(Panel(self.cost_tracker.summary_text(), border_style="yellow"))
+        
         # Show citations if available
         if result.citations:
             console.print("\n📖 [bold]Citations:[/bold]")
@@ -226,7 +285,14 @@ class AgenticAssistant:
         console.print(f"⏱️ Total execution time: {result.trace.total_ms}ms")
         
     def _show_routing_trace(self, decision) -> None:
-        """Show routing decision trace."""
+        """Display the detailed trace of a routing decision.
+
+        Parameters
+        ----------
+        decision : RoutingDecision
+            The routing decision object to display.
+
+        """
         console.print("\n🧭 [bold]Routing Decision:[/bold]")
         console.print(f"Decision: {decision.decision.value}")
         console.print(f"Confidence: {decision.confidence:.2f}")
@@ -243,7 +309,14 @@ class AgenticAssistant:
                 console.print(f"  • {reason}")
                 
     def _show_hybrid_trace(self, trace) -> None:
-        """Show hybrid execution trace."""
+        """Display the detailed trace of a hybrid execution.
+
+        Parameters
+        ----------
+        trace : HybridTrace
+            The hybrid trace object to display.
+
+        """
         console.print("\n🔍 [bold]Execution Trace:[/bold]")
         
         if trace.sql_trace:
@@ -274,20 +347,47 @@ def cli():
               default='./docs', help='Directory containing PDF/text documents')
 @click.option('--trace/--no-trace', default=False, 
               help='Show detailed execution trace')
+@click.option('--integrity-report', type=click.Path(path_type=Path), default=None, help='Write a data integrity report to this file before starting chat')
+@click.option('--token-report', type=click.Path(path_type=Path), default=None, help='Write token usage JSON to this file when exiting chat (Ctrl+C)')
 @click.option('--openai-key', envvar='OPENAI_API_KEY', 
               help='OpenAI API key (or set OPENAI_API_KEY env var)')
-@click.option('--model', default='gpt-5-mini', help='OpenAI model to use for generation.')
-def chat(data_dir: Path, docs_dir: Path, trace: bool, openai_key: str, model: str):
+@click.option('--model-sql', default='gpt-5-nano', help='Model for SQL generation.')
+@click.option('--model-rag', default='gpt-4o-mini', help='Model for RAG synthesis.')
+@click.option('--model-composition', default='gpt-4o-mini', help='Model for hybrid answer composition.')
+def chat(data_dir: Path, docs_dir: Path, trace: bool, integrity_report: Path, token_report: Path, openai_key: str, model_sql: str, model_rag: str, model_composition: str):
     """Interactive chat mode."""
     
     if not openai_key:
         console.print("❌ [bold red]Error:[/bold red] OpenAI API key required. Set OPENAI_API_KEY environment variable or use --openai-key")
         sys.exit(1)
-        
+
+    model_config = {
+        "sql": model_sql,
+        "rag": model_rag,
+        "composition": model_composition,
+        "router": "gpt-5-nano"  # Keep router fixed to a fast model
+    }
     # Initialize assistant
     try:
-        console.print(f"🤖 Initializing assistant with model [bold cyan]{model}[/bold cyan]...")
-        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, model=model)
+        console.print("🤖 Initializing assistant with models...")
+        console.print(f"   - SQL: [cyan]{model_sql}[/cyan]")
+        console.print(f"   - RAG: [cyan]{model_rag}[/cyan]")
+        console.print(f"   - Composition: [cyan]{model_composition}[/cyan]")
+        assistant = AgenticAssistant(
+            data_dir, docs_dir, openai_key, models=model_config
+        )
+        # Optional integrity report
+        if integrity_report:
+            try:
+                report_text = assistant.db.get_integrity_report_text()
+                integrity_report.write_text(report_text, encoding='utf-8')
+                console.print(f"🧪 Wrote integrity report to {integrity_report}")
+            except Exception as e:
+                console.print(f"[yellow]Warning:[/yellow] Failed to write integrity report: {e}")
+    except AuthenticationError:
+        console.print("❌ [bold red]Authentication Error:[/bold red] Invalid OpenAI API key or insufficient permissions.")
+        console.print("   Please check your OPENAI_API_KEY and ensure it has the correct scopes for the model.")
+        sys.exit(1)
     except Exception as e:
         console.print(f"❌ [bold red]Initialization failed:[/bold red] {e}")
         sys.exit(1)
@@ -316,6 +416,13 @@ def chat(data_dir: Path, docs_dir: Path, trace: bool, openai_key: str, model: st
             
         except KeyboardInterrupt:
             console.print("\n👋 Goodbye!")
+            # Write token report on exit if requested
+            if token_report:
+                try:
+                    token_report.write_text(assistant.cost_tracker.summary_json(), encoding='utf-8')
+                    console.print(f"🧮 Wrote token usage JSON to {token_report}")
+                except Exception as e:
+                    console.print(f"[yellow]Warning:[/yellow] Failed to write token report: {e}")
             break
         except Exception as e:
             console.print(f"❌ [bold red]Error:[/bold red] {e}")
@@ -329,21 +436,85 @@ def chat(data_dir: Path, docs_dir: Path, trace: bool, openai_key: str, model: st
               default='./docs', help='Directory containing PDF/text documents')  
 @click.option('--trace/--no-trace', default=False,
               help='Show detailed execution trace')
+@click.option('--explain', is_flag=True, default=False, help='Print SQL EXPLAIN plan before execution')
+@click.option('--explain-analyze', is_flag=True, default=False, help='Print SQL EXPLAIN ANALYZE plan before execution')
+@click.option('--integrity-report', type=click.Path(path_type=Path), default=None, help='Write a data integrity report to this file before execution')
+@click.option('--token-report', type=click.Path(path_type=Path), default=None, help='Write token usage JSON to this file after execution')
 @click.option('--openai-key', envvar='OPENAI_API_KEY',
               help='OpenAI API key (or set OPENAI_API_KEY env var)')
-@click.option('--model', default='gpt-5-mini', help='OpenAI model to use for generation.')
-def ask(question: str, data_dir: Path, docs_dir: Path, trace: bool, openai_key: str, model: str):
+@click.option('--model-sql', default='gpt-5-nano', help='Model for SQL generation.')
+@click.option('--model-rag', default='gpt-4o-mini', help='Model for RAG synthesis.')
+@click.option('--model-composition', default='gpt-4o-mini', help='Model for hybrid answer composition.')
+def ask(question: str, data_dir: Path, docs_dir: Path, trace: bool, explain: bool, explain_analyze: bool, integrity_report: Path, token_report: Path, openai_key: str, model_sql: str, model_rag: str, model_composition: str):
     """Ask a single question."""
     
     if not openai_key:
         console.print("❌ [bold red]Error:[/bold red] OpenAI API key required. Set OPENAI_API_KEY environment variable or use --openai-key")
         sys.exit(1)
-        
+
+    model_config = {
+        "sql": model_sql,
+        "rag": model_rag,
+        "composition": model_composition,
+        "router": "gpt-5-nano"  # Keep router fixed to a fast model
+    }
     # Initialize assistant
     try:
-        console.print(f"🤖 Initializing assistant with model [bold cyan]{model}[/bold cyan]...")
-        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, model=model)
-        assistant.answer_question(question, trace)
+        console.print("🤖 Initializing assistant with models...")
+        console.print(f"   - SQL: [cyan]{model_sql}[/cyan]")
+        console.print(f"   - RAG: [cyan]{model_rag}[/cyan]")
+        console.print(f"   - Composition: [cyan]{model_composition}[/cyan]")
+        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, models=model_config)
+        # Optional integrity report
+        if integrity_report:
+            try:
+                report_text = assistant.db.get_integrity_report_text()
+                integrity_report.write_text(report_text, encoding='utf-8')
+                console.print(f"🧪 Wrote integrity report to {integrity_report}")
+            except Exception as e:
+                console.print(f"[yellow]Warning:[/yellow] Failed to write integrity report: {e}")
+        # Temporarily override SQL execution to include explain flags via orchestrator path
+        # We use the hybrid orchestrator path to keep behavior consistent
+        if explain or explain_analyze:
+            # Route question to SQL-only to include explain plan in SQL tool
+            result = assistant.sql_tool.execute_question(question, explain=explain, explain_analyze=explain_analyze)
+            # Display results like _execute_sql
+            console.print("\n📊 [bold]SQL Results:[/bold]")
+            if result.rows:
+                table = Table(show_header=True, header_style="bold magenta")
+                for col in result.columns:
+                    table.add_column(str(col))
+                for row in result.rows[:20]:
+                    table.add_row(*[str(cell) for cell in row])
+                console.print(table)
+                if len(result.rows) > 20:
+                    console.print(f"[dim]... and {len(result.rows) - 20} more rows[/dim]")
+            else:
+                console.print("[yellow]No data found[/yellow]")
+            console.print("\n💾 [bold]SQL Query:[/bold]")
+            console.print(Panel(result.sql_used, expand=False, border_style="blue"))
+            if result.explain_plan:
+                console.print("\n🧩 [bold]Explain Plan:[/bold]")
+                console.print(Panel(result.explain_plan, expand=False, border_style="magenta"))
+            console.print(f"⏱️ Executed in {result.execution_ms}ms, returned {result.row_count} rows")
+            if token_report:
+                try:
+                    token_report.write_text(assistant.cost_tracker.summary_json(), encoding='utf-8')
+                    console.print(f"🧮 Wrote token usage JSON to {token_report}")
+                except Exception as e:
+                    console.print(f"[yellow]Warning:[/yellow] Failed to write token report: {e}")
+        else:
+            assistant.answer_question(question, trace)
+            if token_report:
+                try:
+                    token_report.write_text(assistant.cost_tracker.summary_json(), encoding='utf-8')
+                    console.print(f"🧮 Wrote token usage JSON to {token_report}")
+                except Exception as e:
+                    console.print(f"[yellow]Warning:[/yellow] Failed to write token report: {e}")
+    except AuthenticationError:
+        console.print("❌ [bold red]Authentication Error:[/bold red] Invalid OpenAI API key or insufficient permissions.")
+        console.print("   Please check your OPENAI_API_KEY and ensure it has the correct scopes for the model.")
+        sys.exit(1)
     except Exception as e:
         console.print(f"❌ [bold red]Error:[/bold red] {e}")
         if trace:
@@ -356,16 +527,28 @@ def ask(question: str, data_dir: Path, docs_dir: Path, trace: bool, openai_key: 
               default='./data', help='Directory containing CSV files')
 @click.option('--docs-dir', type=click.Path(exists=True, path_type=Path),
               default='./docs', help='Directory containing PDF/text documents')
+@click.option('--explain', is_flag=True, default=False, help='Print SQL EXPLAIN plan before SQL execution')
+@click.option('--explain-analyze', is_flag=True, default=False, help='Print SQL EXPLAIN ANALYZE plan before SQL execution')
+@click.option('--integrity-report', type=click.Path(path_type=Path), default=None, help='Write a data integrity report to this file before running')
+@click.option('--token-report', type=click.Path(path_type=Path), default=None, help='Write token usage JSON to this file after running')
 @click.option('--openai-key', envvar='OPENAI_API_KEY',
               help='OpenAI API key (or set OPENAI_API_KEY env var)')
-@click.option('--model', default='gpt-5-mini', help='OpenAI model to use for generation.')
-def demo(data_dir: Path, docs_dir: Path, openai_key: str, model: str):
+@click.option('--model-sql', default='gpt-5-nano', help='Model for SQL generation.')
+@click.option('--model-rag', default='gpt-4o-mini', help='Model for RAG synthesis.')
+@click.option('--model-composition', default='gpt-4o-mini', help='Model for hybrid answer composition.')
+def demo(data_dir: Path, docs_dir: Path, explain: bool, explain_analyze: bool, integrity_report: Path, token_report: Path, openai_key: str, model_sql: str, model_rag: str, model_composition: str):
     """Run the 4 demo questions from the PRD."""
     
     if not openai_key:
         console.print("❌ [bold red]Error:[/bold red] OpenAI API key required. Set OPENAI_API_KEY environment variable or use --openai-key")
         sys.exit(1)
-        
+
+    model_config = {
+        "sql": model_sql,
+        "rag": model_rag,
+        "composition": model_composition,
+        "router": "gpt-5-nano"  # Keep router fixed to a fast model
+    }
     demo_questions = [
         "Monthly RAV4 HEV sales in Germany in 2024",
         "What is the standard Toyota warranty for Europe?", 
@@ -376,24 +559,73 @@ def demo(data_dir: Path, docs_dir: Path, openai_key: str, model: str):
     console.print("🎯 [bold]Running Demo Questions[/bold]")
     
     try:
-        console.print(f"🤖 Initializing assistant with model [bold cyan]{model}[/bold cyan]...")
-        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, model=model)
-        
+        console.print("🤖 Initializing assistant with models...")
+        console.print(f"   - SQL: [cyan]{model_sql}[/cyan]")
+        console.print(f"   - RAG: [cyan]{model_rag}[/cyan]")
+        console.print(f"   - Composition: [cyan]{model_composition}[/cyan]")
+        assistant = AgenticAssistant(data_dir, docs_dir, openai_key, models=model_config)
+
+        # Optional: write data integrity report
+        if integrity_report:
+            try:
+                report_text = assistant.db.get_integrity_report_text()
+                integrity_report.write_text(report_text, encoding='utf-8')
+                console.print(f"🧪 Wrote integrity report to {integrity_report}")
+            except Exception as e:
+                console.print(f"[yellow]Warning:[/yellow] Failed to write integrity report: {e}")
+
         for i, question in enumerate(demo_questions, 1):
             console.print(f"\n{'='*60}")
             console.print(f"[bold]Demo Question {i}/4[/bold]")
-            assistant.answer_question(question, show_trace=True)
-            
+            if explain or explain_analyze:
+                # When explain flags are set, and router picks SQL, include plan in output
+                routing_decision = assistant.router.route(question)
+                if routing_decision.decision == ToolChoice.SQL:
+                    result = assistant.sql_tool.execute_question(question, explain=explain, explain_analyze=explain_analyze)
+                    console.print("\n📊 [bold]SQL Results:[/bold]")
+                    if result.rows:
+                        table = Table(show_header=True, header_style="bold magenta")
+                        for col in result.columns:
+                            table.add_column(str(col))
+                        for row in result.rows[:20]:
+                            table.add_row(*[str(cell) for cell in row])
+                        console.print(table)
+                        if len(result.rows) > 20:
+                            console.print(f"[dim]... and {len(result.rows) - 20} more rows[/dim]")
+                    else:
+                        console.print("[yellow]No data found[/yellow]")
+                    console.print("\n💾 [bold]SQL Query:[/bold]")
+                    console.print(Panel(result.sql_used, expand=False, border_style="blue"))
+                    if result.explain_plan:
+                        console.print("\n🧩 [bold]Explain Plan:[/bold]")
+                        console.print(Panel(result.explain_plan, expand=False, border_style="magenta"))
+                    console.print(f"⏱️ Executed in {result.execution_ms}ms, returned {result.row_count} rows")
+                else:
+                    assistant.answer_question(question, show_trace=True)
+            else:
+                assistant.answer_question(question, show_trace=True)
+
         console.print(f"\n{'='*60}")
+        # Optional token report
+        if token_report:
+            try:
+                token_report.write_text(assistant.cost_tracker.summary_json(), encoding='utf-8')
+                console.print(f"🧮 Wrote token usage JSON to {token_report}")
+            except Exception as e:
+                console.print(f"[yellow]Warning:[/yellow] Failed to write token report: {e}")
         console.print("✅ [bold green]All demo questions completed![/bold green]")
-        
+
+    except AuthenticationError:
+        console.print("❌ [bold red]Authentication Error:[/bold red] Invalid OpenAI API key or insufficient permissions.")
+        console.print("   Please check your OPENAI_API_KEY and ensure it has the correct scopes for the model.")
+        sys.exit(1)
     except Exception as e:
         console.print(f"❌ [bold red]Demo failed:[/bold red] {e}")
         sys.exit(1)
 
 
 def main():
-    """Main entry point."""
+    """Main entry point for the CLI application."""
     # Set up basic logging
     logging.basicConfig(
         level=logging.WARNING,  # Keep it quiet by default

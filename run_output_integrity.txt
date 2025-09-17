@@ -1,0 +1,8 @@
+Data Integrity Report:
+- Row counts: DIM_MODEL=18, DIM_COUNTRY=7, DIM_ORDERTYPE=3, FACT_SALES=3024, FACT_SALES_ORDERTYPE=3024
+- Orphaned FACT_SALES by model_id: 0
+- Orphaned FACT_SALES by country_code: 0
+- Total contracts: 135654
+- Year range: 2023 to 2024
+- Distinct months present: 12
+- Models: 18, Countries: 7

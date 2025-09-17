@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
 from openai import OpenAI
+from .llm_utils import chat_params_for_model, is_reasoning_model
 
 from .rag_pipeline import RagPipeline, SearchResult
 
@@ -14,7 +15,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Citation:
-    """Citation with source and page information."""
+    """Represents a citation to a source document.
+
+    Attributes
+    ----------
+    source : str
+        The name of the source document file.
+    page : int
+        The page number in the source document.
+    chunk_id : int
+        The ID of the chunk within the page.
+    text_snippet : str
+        A short snippet of the text from the cited chunk.
+    doc_type : str
+        The inferred type of the document.
+    brand : Optional[str]
+        The inferred brand associated with the document.
+    """
     source: str
     page: int
     chunk_id: int
@@ -25,7 +42,26 @@ class Citation:
 
 @dataclass
 class RagResult:
-    """RAG tool result with answer and citations."""
+    """Represents the result of a RAG tool execution.
+
+    Attributes
+    ----------
+    answer : str
+        The synthesized answer to the question.
+    citations : List[Citation]
+        A list of citations that support the answer.
+    retrieval_ms : int
+        The time taken for document retrieval in milliseconds.
+    synthesis_ms : int
+        The time taken for answer synthesis in milliseconds.
+    total_ms : int
+        The total execution time in milliseconds.
+    chunks_retrieved : int
+        The number of chunks retrieved from the vector store.
+    confidence_score : Optional[float]
+        An optional score representing the confidence in the answer,
+        often derived from retrieval scores.
+    """
     answer: str
     citations: List[Citation]
     retrieval_ms: int
@@ -38,28 +74,42 @@ class RagResult:
 class RagTool:
     """RAG tool that retrieves and synthesizes answers with citations."""
     
-    def __init__(self, openai_client: OpenAI, rag_pipeline: RagPipeline, model_name: str = "gpt-5-mini"):
-        """Initialize RAG tool.
-        
-        Args:
-            openai_client: OpenAI client instance
-            rag_pipeline: RAG pipeline for document retrieval
-            model_name: The OpenAI model to use for generation
+    def __init__(self, openai_client: OpenAI, rag_pipeline: RagPipeline, model_name: str = "gpt-5-nano", cost_tracker=None, synthesis_model: Optional[str] = None):
+        """Initialize the RagTool.
+
+        Parameters
+        ----------
+        openai_client : OpenAI
+            An initialized OpenAI client.
+        rag_pipeline : RagPipeline
+            An instance of the RAG pipeline for document retrieval.
+        model_name : str, optional
+            The name of the OpenAI model to use for answer synthesis.
+        cost_tracker : object, optional
+            An instance of CostTracker to record token usage.
         """
         self.model_name = model_name
         self.client = openai_client
         self.rag_pipeline = rag_pipeline
+        self.cost_tracker = cost_tracker
+        self.synthesis_model = synthesis_model
         
     def answer_question(self, question: str, k: int = 5, min_score: float = 0.5) -> RagResult:
-        """Answer a question using retrieved documents.
-        
-        Args:
-            question: User question
-            k: Number of chunks to retrieve
-            min_score: Minimum similarity score threshold
-            
-        Returns:
-            RAG result with answer and citations
+        """Answer a question by retrieving relevant documents and synthesizing an answer.
+
+        Parameters
+        ----------
+        question : str
+            The user's question.
+        k : int, optional
+            The number of document chunks to retrieve.
+        min_score : float, optional
+            The minimum similarity score for a chunk to be considered relevant.
+
+        Returns
+        -------
+        RagResult
+            An object containing the answer, citations, and execution metrics.
         """
         start_time = time.time()
         
@@ -96,14 +146,20 @@ class RagTool:
         )
         
     def _synthesize_answer(self, question: str, search_results: List[SearchResult]) -> tuple[str, List[Citation], float]:
-        """Synthesize answer from retrieved chunks.
-        
-        Args:
-            question: Original question
-            search_results: Search results with chunks
-            
-        Returns:
-            Tuple of (answer, citations, confidence_score)
+        """Synthesize an answer from a list of retrieved search results using an LLM.
+
+        Parameters
+        ----------
+        question : str
+            The original user question.
+        search_results : List[SearchResult]
+            A list of search results containing relevant chunks.
+
+        Returns
+        -------
+        tuple[str, List[Citation], float]
+            A tuple containing the synthesized answer, a list of generated
+            citations, and a confidence score.
         """
         if not search_results:
             return "Insufficient evidence to answer the question.", [], 0.0
@@ -153,15 +209,31 @@ Question: {question}
 Please answer the question using only the information provided in the context above. Include appropriate citations."""
         
         try:
+            # Choose a faster synthesis model when the primary model is a reasoning model
+            model_to_use = self.synthesis_model or ("gpt-4o-mini" if is_reasoning_model(self.model_name) else self.model_name)
             response = self.client.chat.completions.create(
-                model=self.model_name,
+                model=model_to_use,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
-                max_tokens=800
+                **chat_params_for_model(model_to_use, 800, temperature=0.1)
             )
+            
+            # Cost tracking
+            try:
+                if self.cost_tracker and getattr(response, 'usage', None):
+                    u = response.usage
+                    self.cost_tracker.add_chat_usage_detailed(
+                        self.model_name,
+                        prompt_tokens=getattr(u, 'prompt_tokens', 0),
+                        completion_tokens=getattr(u, 'completion_tokens', 0),
+                        total_tokens=getattr(u, 'total_tokens', 0),
+                        cached_prompt_tokens=getattr(u, 'prompt_tokens_details', {}).get('cached_tokens', 0) if hasattr(u, 'prompt_tokens_details') else 0,
+                        reasoning_tokens=getattr(u, 'completion_tokens_details', {}).get('reasoning_tokens', 0) if hasattr(u, 'completion_tokens_details') else 0,
+                    )
+            except Exception:
+                pass
             
             answer = response.choices[0].message.content.strip()
             
@@ -180,14 +252,19 @@ Please answer the question using only the information provided in the context ab
             return f"Error generating answer: {e}", citations, 0.0
             
     def _format_citations(self, answer: str, citations: List[Citation]) -> str:
-        """Convert numbered citations [1] to document format [source p.X].
-        
-        Args:
-            answer: Answer text with numbered citations
-            citations: List of citation objects
-            
-        Returns:
-            Answer with formatted citations
+        """Convert numbered citations (e.g., [1]) to a full format (e.g., [source p.X]).
+
+        Parameters
+        ----------
+        answer : str
+            The answer text containing numbered citations.
+        citations : List[Citation]
+            The list of citation objects corresponding to the numbers.
+
+        Returns
+        -------
+        str
+            The answer with citations reformatted.
         """
         for i, citation in enumerate(citations, 1):
             old_format = f"[{i}]"
@@ -197,36 +274,50 @@ Please answer the question using only the information provided in the context ab
         return answer
         
     def get_source_info(self) -> Dict[str, Any]:
-        """Get information about available sources.
-        
-        Returns:
-            Dictionary with source statistics
+        """Get statistics about the available document sources in the RAG pipeline.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary containing corpus statistics.
         """
         return self.rag_pipeline.get_corpus_stats()
         
     def search_documents(self, query: str, k: int = 5, doc_type_filter: Optional[str] = None) -> List[SearchResult]:
-        """Search documents without answer synthesis.
-        
-        Args:
-            query: Search query
-            k: Number of results
-            doc_type_filter: Filter by document type
-            
-        Returns:
-            List of search results
+        """Search for relevant document chunks without synthesizing an answer.
+
+        Parameters
+        ----------
+        query : str
+            The search query.
+        k : int, optional
+            The number of results to return.
+        doc_type_filter : Optional[str], optional
+            An optional filter for the document type.
+
+        Returns
+        -------
+        List[SearchResult]
+            A list of raw search results.
         """
         return self.rag_pipeline.search(query, k=k, doc_type_filter=doc_type_filter)
         
     def validate_answer_quality(self, question: str, answer: str, citations: List[Citation]) -> Dict[str, Any]:
-        """Validate answer quality and citation coverage.
-        
-        Args:
-            question: Original question
-            answer: Generated answer
-            citations: Citations used
-            
-        Returns:
-            Quality metrics dictionary
+        """Perform a basic validation of answer quality and citation coverage.
+
+        Parameters
+        ----------
+        question : str
+            The original question asked.
+        answer : str
+            The generated answer.
+        citations : List[Citation]
+            The list of citations provided with the answer.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary of quality metrics.
         """
         metrics = {
             "has_answer": len(answer) > 10 and "insufficient" not in answer.lower(),

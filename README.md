@@ -1,17 +1,22 @@
 # Agentic Q&A Assistant
 
-**A production-ready AI assistant combining SQL analytics, RAG document search, and owner's manual knowledge**
+An AI assistant combining SQL analytics, RAG document search, and owner's manual knowledge
 
 ## Overview
 
 This project implements the Agentic Q&A Assistant as specified in the PRD, providing intelligent routing between SQL queries for sales data analysis and RAG-based retrieval for warranty policies, contracts, and owner's manuals.
+
+For a deeper technical deep-dive (architecture, design decisions, tradeoffs, and operations), see the companion document:
+
+- [TECHNICAL_DESIGN.md](./TECHNICAL_DESIGN.md)
+- [PRODUCTION_ROADMAP.md](./PRODUCTION_ROADMAP.md)
 
 ## Features
 
 ### 🎯 **Intelligent Routing**
 
 - **Rule-based routing** with keyword matching for fast, deterministic decisions
-- **LLM fallback** for ambiguous cases using GPT-5 mini
+- **LLM fallback** for ambiguous cases using GPT-5 mini (model is selectable)
 - **Hybrid mode** for questions requiring both SQL and RAG
 
 ### 📊 **SQL Tool**
@@ -46,7 +51,7 @@ This project implements the Agentic Q&A Assistant as specified in the PRD, provi
 ### Prerequisites
 
 - Python 3.12+
-- OpenAI API key
+- OpenAI API key (scope is chat **and** embeddings)
 - uv package manager
 
 ### Installation
@@ -68,6 +73,15 @@ echo "OPENAI_API_KEY=your_key_here" > .env
 # Run all 4 demo questions from the PRD
 uv run agentic-qa demo
 
+# Include SQL EXPLAIN for any demo question routed to SQL
+uv run agentic-qa demo --explain
+
+# Write a data integrity report before running
+uv run agentic-qa demo --integrity-report integrity.txt
+
+# Write token usage JSON after running
+uv run agentic-qa demo --token-report tokens.json
+
 # Or use the module directly
 uv run python -m agentic_qa_assistant.main demo
 ```
@@ -80,6 +94,12 @@ uv run agentic-qa chat
 
 # With trace mode enabled
 uv run agentic-qa chat --trace
+
+# Write integrity report before starting chat
+uv run agentic-qa chat --integrity-report integrity_chat.txt
+
+# Write token usage JSON on exit (Ctrl+C)
+uv run agentic-qa chat --token-report tokens_chat.json
 ```
 
 ### Single Questions
@@ -88,8 +108,20 @@ uv run agentic-qa chat --trace
 # Ask a single question
 uv run agentic-qa ask "Monthly RAV4 HEV sales in Germany in 2024"
 
+# Write integrity report before execution
+uv run agentic-qa ask --integrity-report integrity_ask.txt "Monthly RAV4 HEV sales in Germany in 2024"
+
+# Write token usage JSON after execution
+uv run agentic-qa ask --token-report tokens_ask.json "Monthly RAV4 HEV sales in Germany in 2024"
+
 # With detailed trace
 uv run agentic-qa ask --trace "What is the Toyota warranty coverage?"
+
+# Show the SQL EXPLAIN plan for SQL questions
+uv run agentic-qa ask --explain "Monthly RAV4 HEV sales in Germany in 2024"
+
+# Or with EXPLAIN ANALYZE (includes runtime metrics)
+uv run agentic-qa ask --explain-analyze "Monthly RAV4 HEV sales in Germany in 2024"
 ```
 
 ## Demo Questions
@@ -103,21 +135,41 @@ The system handles these PRD demo questions:
 
 ## Architecture
 
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│    CLI      │────│  Assistant  │────│   Router    │
-└─────────────┘    └─────────────┘    └─────────────┘
-                           │                   │
-                           ▼                   ▼
-                   ┌─────────────┐    ┌─────────────┐
-                   │ SQL Tool    │    │  RAG Tool   │
-                   └─────────────┘    └─────────────┘
-                           │                   │
-                           ▼                   ▼
-                   ┌─────────────┐    ┌─────────────┐
-                   │   DuckDB    │    │ FAISS Index │
-                   │ (CSV Data)  │    │ (Documents) │
-                   └─────────────┘    └─────────────┘
+```mermaid
+graph TD
+    subgraph "User Interface"
+        CLI(CLI)
+    end
+
+    subgraph "Core Logic"
+        Assistant(AgenticAssistant)
+        Router(SmartRouter)
+        Orchestrator(HybridOrchestrator)
+    end
+
+    subgraph "Tools"
+        SQLTool(SQL Tool)
+        RAGTool(RAG Tool)
+    end
+
+    subgraph "Data Sources"
+        DB[(DuckDB)]
+        Index[(FAISS Index)]
+    end
+
+    CLI --> Assistant
+    Assistant --> Router
+    Router --> Assistant
+
+    Assistant -- SQL/RAG routes --> SQLTool
+    Assistant -- SQL/RAG routes --> RAGTool
+    Assistant -- Hybrid route --> Orchestrator
+
+    Orchestrator --> SQLTool
+    Orchestrator --> RAGTool
+
+    SQLTool --> DB
+    RAGTool --> Index
 ```
 
 ### Core Components
@@ -161,12 +213,12 @@ uv run python tests/test_components.py
 
 Tests cover:
 
-- ✅ Database schema and operations
-- ✅ Document processing and chunking
-- ✅ SQL validation and safety
-- ✅ Router decision logic
-- ✅ Integration with demo questions
-- ✅ Golden SQL query validation
+- Database schema and operations
+- Document processing and chunking
+- SQL validation and safety
+- Router decision logic
+- Integration with demo questions
+- Golden SQL query validation
 
 ## Performance
 
@@ -185,45 +237,52 @@ Tests cover:
 
 ### SQL Safety
 
-- ✅ Read-only database access
-- ✅ AST validation with sqlglot
-- ✅ Table/column allowlists
-- ✅ Query timeouts (2s)
-- ✅ Row limits (10k max)
-- ✅ Parameterized queries
+- New: Use --explain or --explain-analyze to print DuckDB plans for executed SQL (when routed to SQL).
+
+- Read-only database access
+- AST validation with sqlglot
+- Table/column allowlists
+- Query timeouts (2s)
+- Row limits (10k max)
+- Parameterized queries
 
 ### RAG Grounding
 
-- ✅ Citation requirements
-- ✅ Source attribution
-- ✅ "Insufficient evidence" fallbacks
-- ✅ Confidence scoring
+- Citation requirements
+- Source attribution
+- "Insufficient evidence" fallbacks
+- Confidence scoring
 
 ## Project Structure
 
-```
+```shell
 agentic_qa_assistant/
-├── agentic_qa_assistant/
-│   ├── main.py              # CLI interface
-│   ├── database.py          # DuckDB management
-│   ├── sql_tool.py          # SQL generation & validation
-│   ├── rag_pipeline.py      # Document processing & search
-│   ├── rag_tool.py          # RAG with citations
-│   ├── router.py            # Intelligent routing
-│   └── hybrid_orchestrator.py # Parallel execution
-├── data/                    # CSV files
-├── docs/                    # PDF/text documents
-├── tests/                   # Test suite
-└── vector_index/            # FAISS index (auto-created)
+├── agentic_qa_assistant/       # Main package
+│   ├── __init__.py             # Package initializer
+│   ├── main.py                 # CLI interface
+│   ├── database.py             # DuckDB management
+│   ├── sql_tool.py             # SQL generation & validation
+│   ├── rag_pipeline.py         # Document processing & search
+│   ├── rag_tool.py             # RAG with citations
+│   ├── router.py               # Intelligent routing
+│   ├── hybrid_orchestrator.py  # Parallel execution
+│   ├── llm_utils.py            # LLM parameter helpers
+│   └── cost_tracker.py         # Token usage tracking
+├── data/                       # CSV files
+├── docs/                       # PDF/text documents
+├── sql_check.py                # Standalone SQL checker utility
+├── tests/                      # Test suite
+└── vector_index/               # FAISS index (auto-created)
 ```
 
 ## Environment Variables
 
 ```bash
-# Required
+# Required 
+# REM: the scope MUST include EMBEDDINGS
 OPENAI_API_KEY=your_openai_api_key
 
-# Optional
+# Optional, not implemented
 LOGFIRE_TOKEN=your_logfire_token  # For advanced tracing
 ```
 
@@ -270,6 +329,15 @@ LOGFIRE_TOKEN=your_logfire_token  # For advanced tracing
 - **Audit logging**: All queries and responses logged
 
 ## Troubleshooting
+
+### Data Integrity Logging
+
+- On startup, the database loader now logs:
+  - Table row counts for DIM_MODEL, DIM_COUNTRY, DIM_ORDERTYPE, FACT_SALES, FACT_SALES_ORDERTYPE
+  - Referential integrity warnings (orphaned model_id or country_code)
+  - Summary stats (total contracts, number of models/countries, year range, distinct months)
+
+If joins ever return unexpectedly empty results, check these logs to confirm CSVs were loaded correctly and that keys align across tables.
 
 ### Common Issues
 

@@ -21,7 +21,32 @@ logger = logging.getLogger(__name__)
 
 @dataclass 
 class Chunk:
-    """Represents a text chunk with metadata."""
+    """Represents a text chunk with its associated metadata.
+
+    Attributes
+    ----------
+    text : str
+        The text content of the chunk.
+    source : str
+        The name of the source document file.
+    page : int
+        The page number in the source document.
+    chunk_id : int
+        The sequential ID of the chunk within a page.
+    doc_type : str
+        The inferred type of the document (e.g., 'manual', 'contract').
+    brand : Optional[str]
+        The inferred brand (e.g., 'Toyota', 'Lexus').
+    model : Optional[str]
+        The inferred vehicle model.
+    year : Optional[int]
+        The inferred year from the document filename.
+    region : Optional[str]
+        The inferred geographical region.
+    checksum : Optional[str]
+        An MD5 hash of the chunk's text content.
+
+    """
     text: str
     source: str
     page: int
@@ -41,7 +66,17 @@ class Chunk:
 
 @dataclass
 class SearchResult:
-    """Search result with relevance score."""
+    """Represents a single search result from the vector index.
+
+    Attributes
+    ----------
+    chunk : Chunk
+        The retrieved text chunk.
+    score : float
+        The similarity score of the chunk to the query.
+    rank : int
+        The rank of the result in the search results list.
+    """
     chunk: Chunk
     score: float
     rank: int
@@ -51,24 +86,33 @@ class DocumentProcessor:
     """Processes PDF documents into text chunks."""
     
     def __init__(self, chunk_size: int = 600, overlap: int = 100):
-        """Initialize document processor.
-        
-        Args:
-            chunk_size: Target chunk size in tokens
-            overlap: Overlap between chunks in tokens
+        """Initialize the DocumentProcessor.
+
+        Parameters
+        ----------
+        chunk_size : int, optional
+            The target size of each chunk in tokens.
+        overlap : int, optional
+            The number of tokens to overlap between consecutive chunks.
+
         """
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
         
     def process_document(self, doc_path: Path) -> List[Chunk]:
-        """Process a document (PDF or text) into chunks.
-        
-        Args:
-            doc_path: Path to document file
-            
-        Returns:
-            List of text chunks with metadata
+        """Process a single document file (PDF or text) into chunks.
+
+        Parameters
+        ----------
+        doc_path : Path
+            The path to the document file.
+
+        Returns
+        -------
+        List[Chunk]
+            A list of Chunk objects extracted from the document.
+
         """
         if doc_path.suffix.lower() == '.pdf':
             return self._process_pdf(doc_path)
@@ -78,18 +122,19 @@ class DocumentProcessor:
             logger.warning(f"Unsupported file type: {doc_path.suffix}")
             return []
     
-    def process_pdf(self, pdf_path: Path) -> List[Chunk]:
-        """Process a PDF into chunks (backward compatibility)."""
-        return self._process_pdf(pdf_path)
-        
     def _process_pdf(self, pdf_path: Path) -> List[Chunk]:
-        """Process a single PDF into chunks.
-        
-        Args:
-            pdf_path: Path to PDF file
-            
-        Returns:
-            List of text chunks with metadata
+        """Extract text from a PDF and split it into chunks.
+
+        Parameters
+        ----------
+        pdf_path : Path
+            The path to the PDF file.
+
+        Returns
+        -------
+        List[Chunk]
+            A list of chunks from the PDF.
+
         """
         chunks = []
         
@@ -115,13 +160,18 @@ class DocumentProcessor:
         return chunks
         
     def _process_text(self, text_path: Path) -> List[Chunk]:
-        """Process a text file into chunks.
-        
-        Args:
-            text_path: Path to text file
-            
-        Returns:
-            List of text chunks with metadata
+        """Read a text file and split it into chunks.
+
+        Parameters
+        ----------
+        text_path : Path
+            The path to the text file.
+
+        Returns
+        -------
+        List[Chunk]
+            A list of chunks from the text file.
+
         """
         chunks = []
         
@@ -145,7 +195,18 @@ class DocumentProcessor:
         return chunks
         
     def _clean_text(self, text: str) -> str:
-        """Clean and normalize text."""
+        """Perform basic cleaning and normalization of extracted text.
+
+        Parameters
+        ----------
+        text : str
+            The raw text to clean.
+
+        Returns
+        -------
+        str
+            The cleaned text.
+        """
         # Remove excessive whitespace
         text = ' '.join(text.split())
         
@@ -162,8 +223,22 @@ class DocumentProcessor:
         return ' '.join(cleaned_lines)
         
     def _create_chunks(self, text: str, pdf_path: Path, page_num: int) -> List[Chunk]:
-        """Create overlapping chunks from text."""
-        
+        """Split a single block of text into overlapping chunks.
+
+        Parameters
+        ----------
+        text : str
+            The text to be chunked.
+        pdf_path : Path
+            The path to the source document, used for metadata.
+        page_num : int
+            The page number of the text.
+
+        Returns
+        -------
+        List[Chunk]
+            A list of Chunk objects.
+        """
         # Tokenize the text
         tokens = self.tokenizer.encode(text)
         
@@ -194,8 +269,25 @@ class DocumentProcessor:
         return chunks
         
     def _create_chunk_object(self, text: str, pdf_path: Path, page_num: int, chunk_id: int) -> Chunk:
-        """Create a Chunk object with inferred metadata."""
-        
+        """Create a Chunk object and infer metadata from its context.
+
+        Parameters
+        ----------
+        text : str
+            The text content of the chunk.
+        pdf_path : Path
+            The path to the source document.
+        page_num : int
+            The page number of the chunk.
+        chunk_id : int
+            The ID of the chunk within the page.
+
+        Returns
+        -------
+        Chunk
+            A fully populated Chunk object.
+
+        """
         # Infer document type and metadata from filename and content
         filename = pdf_path.stem.lower()
         text_lower = text.lower()
@@ -240,27 +332,38 @@ class DocumentProcessor:
 class VectorIndex:
     """FAISS-based vector index for semantic search."""
     
-    def __init__(self, embedding_model: str = "text-embedding-3-small"):
-        """Initialize vector index.
-        
-        Args:
-            embedding_model: OpenAI embedding model to use
+    def __init__(self, embedding_model: str = "text-embedding-3-small", cost_tracker=None):
+        """Initialize the VectorIndex.
+
+        Parameters
+        ----------
+        embedding_model : str, optional
+            The name of the OpenAI embedding model to use.
+        cost_tracker : object, optional
+            An instance of CostTracker to record token usage.
+
         """
         self.embedding_model = embedding_model
         self.dimension = 1536  # text-embedding-3-small dimension
-        self.index = None
+        self.index: Optional[faiss.Index] = None
         self.chunks: List[Chunk] = []
         self.embeddings: Optional[np.ndarray] = None
+        self.cost_tracker = cost_tracker
         
     def create_embeddings(self, texts: List[str], openai_client: OpenAI) -> np.ndarray:
-        """Create embeddings for a list of texts.
-        
-        Args:
-            texts: List of text strings
-            openai_client: OpenAI client instance
-            
-        Returns:
-            Numpy array of embeddings
+        """Create embeddings for a list of texts using the OpenAI API.
+
+        Parameters
+        ----------
+        texts : List[str]
+            A list of text strings to embed.
+        openai_client : OpenAI
+            An initialized OpenAI client.
+
+        Returns
+        -------
+        np.ndarray
+            A NumPy array of the resulting embeddings.
         """
         logger.info(f"Creating embeddings for {len(texts)} texts")
         
@@ -280,6 +383,18 @@ class VectorIndex:
                 batch_embeddings = [item.embedding for item in response.data]
                 all_embeddings.extend(batch_embeddings)
                 
+                # Token tracking: use API usage if available, otherwise estimate
+                if self.cost_tracker is not None:
+                    usage = getattr(response, 'usage', None)
+                    if usage and hasattr(usage, 'total_tokens') and usage.total_tokens:
+                        self.cost_tracker.add_embeddings_usage(self.embedding_model, int(usage.total_tokens))
+                    else:
+                        try:
+                            est = self.cost_tracker.estimate_tokens(batch_texts)
+                            self.cost_tracker.add_embeddings_usage(self.embedding_model, est)
+                        except Exception:
+                            pass
+                
                 logger.info(f"Processed batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1}")
                 
             except Exception as e:
@@ -292,11 +407,17 @@ class VectorIndex:
         return embeddings_array
         
     def build_index(self, chunks: List[Chunk], openai_client: OpenAI):
-        """Build FAISS index from chunks.
-        
-        Args:
-            chunks: List of text chunks
-            openai_client: OpenAI client instance
+        """Build the FAISS index from a list of chunks.
+
+        This method creates embeddings for the chunks and adds them to the
+        FAISS index.
+
+        Parameters
+        ----------
+        chunks : List[Chunk]
+            A list of Chunk objects to be indexed.
+        openai_client : OpenAI
+            An initialized OpenAI client.
         """
         self.chunks = chunks
         
@@ -316,15 +437,21 @@ class VectorIndex:
         logger.info(f"Built FAISS index with {self.index.ntotal} vectors")
         
     def search(self, query: str, openai_client: OpenAI, k: int = 5) -> List[SearchResult]:
-        """Search the index for similar chunks.
-        
-        Args:
-            query: Search query
-            openai_client: OpenAI client instance
-            k: Number of results to return
-            
-        Returns:
-            List of search results ranked by similarity
+        """Search the index for chunks similar to a query.
+
+        Parameters
+        ----------
+        query : str
+            The search query string.
+        openai_client : OpenAI
+            An initialized OpenAI client.
+        k : int, optional
+            The number of top results to return.
+
+        Returns
+        -------
+        List[SearchResult]
+            A list of ranked search results.
         """
         if not self.index or not self.chunks:
             raise ValueError("Index not built. Call build_index() first.")
@@ -351,10 +478,12 @@ class VectorIndex:
         return results
         
     def save(self, path: Path):
-        """Save index to disk.
-        
-        Args:
-            path: Directory to save index files
+        """Save the FAISS index and associated metadata to disk.
+
+        Parameters
+        ----------
+        path : Path
+            The directory where the index files will be saved.
         """
         path.mkdir(parents=True, exist_ok=True)
         
@@ -371,13 +500,17 @@ class VectorIndex:
         logger.info(f"Saved index to {path}")
         
     def load(self, path: Path) -> bool:
-        """Load index from disk.
-        
-        Args:
-            path: Directory containing index files
-            
-        Returns:
-            True if loaded successfully
+        """Load the FAISS index and metadata from disk.
+
+        Parameters
+        ----------
+        path : Path
+            The directory containing the index files.
+
+        Returns
+        -------
+        bool
+            True if the index was loaded successfully, False otherwise.
         """
         try:
             # Load FAISS index
@@ -401,24 +534,34 @@ class VectorIndex:
 class RagPipeline:
     """Main RAG pipeline orchestrator."""
     
-    def __init__(self, openai_client: OpenAI, index_path: Optional[Path] = None):
-        """Initialize RAG pipeline.
-        
-        Args:
-            openai_client: OpenAI client instance
-            index_path: Path to save/load vector index
+    def __init__(self, openai_client: OpenAI, index_path: Optional[Path] = None, cost_tracker=None):
+        """Initialize the RAGPipeline.
+
+        Parameters
+        ----------
+        openai_client : OpenAI
+            An initialized OpenAI client.
+        index_path : Optional[Path], optional
+            The path to save or load the vector index.
+        cost_tracker : object, optional
+            An instance of CostTracker to record token usage.
         """
         self.client = openai_client
         self.processor = DocumentProcessor()
-        self.index = VectorIndex()
+        self.index = VectorIndex(cost_tracker=cost_tracker)
         self.index_path = index_path or Path("./vector_index")
         
     def ingest_documents(self, doc_paths: List[Path], force_rebuild: bool = False):
-        """Ingest PDF documents into the vector index.
-        
-        Args:
-            doc_paths: List of PDF file paths
-            force_rebuild: Force rebuilding even if index exists
+        """Ingest documents, creating and saving a vector index.
+
+        If an index already exists, it will be loaded unless `force_rebuild` is True.
+
+        Parameters
+        ----------
+        doc_paths : List[Path]
+            A list of paths to the document files to ingest.
+        force_rebuild : bool, optional
+            If True, forces the pipeline to rebuild the index from scratch.
         """
         # Try to load existing index first
         if not force_rebuild and self.index_path.exists() and self.index.load(self.index_path):
@@ -457,28 +600,42 @@ class RagPipeline:
         self.index.save(self.index_path)
         
     def search(self, query: str, k: int = 5, doc_type_filter: Optional[str] = None) -> List[SearchResult]:
-        """Search documents for relevant chunks.
-        
-        Args:
-            query: Search query
-            k: Number of results to return
-            doc_type_filter: Filter by document type (contract, warranty, manual)
-            
-        Returns:
-            List of ranked search results
+        """Search the indexed documents for relevant chunks.
+
+        Parameters
+        ----------
+        query : str
+            The search query string.
+        k : int, optional
+            The number of top results to return.
+        doc_type_filter : Optional[str], optional
+            An optional filter to restrict results to a specific document type
+            (e.g., 'contract', 'warranty', 'manual').
+
+        Returns
+        -------
+        List[SearchResult]
+            A list of ranked search results.
         """
         # Get initial results
         results = self.index.search(query, self.client, k=k*2)  # Get more to allow filtering
         
         # Apply filters if specified
         if doc_type_filter:
-            results = [r for r in results if r.chunk.doc_type == doc_type_filter]
+            results = [r for r in results if r.chunk.doc_type == doc_type_filter.lower()]
             
         # Return top k results
         return results[:k]
         
     def get_corpus_stats(self) -> Dict[str, Any]:
-        """Get statistics about the ingested corpus."""
+        """Get statistics about the ingested document corpus.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary containing statistics like total chunks, sources,
+            and counts by document type and brand.
+        """
         if not self.index.chunks:
             return {"total_chunks": 0}
             

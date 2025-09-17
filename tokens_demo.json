@@ -1,0 +1,13 @@
+{
+  "started_at": 1758139874.0156946,
+  "models": {
+    "text-embedding-3-small": {
+      "input_tokens": 0,
+      "input_cached_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "total_tokens": 0,
+      "embedding_tokens": 38
+    }
+  }
+}

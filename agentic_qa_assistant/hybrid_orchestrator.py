@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import OpenAI
+from .llm_utils import chat_params_for_model, is_reasoning_model
 
 from .sql_tool import SqlTool, SqlResult
 from .rag_tool import RagTool, RagResult, Citation
@@ -17,7 +18,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class HybridTrace:
-    """Trace information for hybrid execution."""
+    """Trace information for a hybrid execution flow.
+
+    Attributes
+    ----------
+    sql_trace : Optional[Dict[str, Any]]
+        Trace information from the SQL tool execution.
+    rag_trace : Optional[Dict[str, Any]]
+        Trace information from the RAG tool execution.
+    composition_ms : int
+        Time taken in milliseconds to compose the final answer.
+    total_ms : int
+        Total time taken in milliseconds for the entire hybrid execution.
+    errors : List[str]
+        A list of error messages encountered during execution.
+    """
     sql_trace: Optional[Dict[str, Any]] = None
     rag_trace: Optional[Dict[str, Any]] = None
     composition_ms: int = 0
@@ -31,7 +46,21 @@ class HybridTrace:
 
 @dataclass
 class HybridResult:
-    """Combined result from SQL and RAG tools."""
+    """Combined result from the hybrid execution of SQL and RAG tools.
+
+    Attributes
+    ----------
+    answer : str
+        The final composed answer.
+    sql_result : Optional[SqlResult]
+        The result from the SQL tool, if executed.
+    rag_result : Optional[RagResult]
+        The result from the RAG tool, if executed.
+    citations : List[Citation]
+        A list of citations supporting the answer, primarily from the RAG tool.
+    trace : HybridTrace
+        The trace object containing performance and execution details.
+    """
     answer: str
     sql_result: Optional[SqlResult] = None
     rag_result: Optional[RagResult] = None
@@ -46,29 +75,45 @@ class HybridResult:
 
 
 class AnswerComposer:
-    """Composes final answers from SQL and RAG results."""
+    """Composes a final answer from SQL and RAG results using an LLM."""
     
-    def __init__(self, openai_client: OpenAI, model_name: str = "gpt-5-mini"):
-        """Initialize answer composer.
-        
-        Args:
-            openai_client: OpenAI client instance
-            model_name: The OpenAI model to use for generation
+    def __init__(self, openai_client: OpenAI, model_name: str = "gpt-5-nano", composition_model: Optional[str] = None):
+        """Initialize the AnswerComposer.
+
+        Parameters
+        ----------
+        openai_client : OpenAI
+            An instance of the OpenAI client.
+        model_name : str, optional
+            The name of the OpenAI model to use for answer composition.
+
         """
         self.model_name = model_name
+        self.composition_model = composition_model
         self.client = openai_client
         
     def compose_hybrid_answer(self, question: str, sql_result: Optional[SqlResult], 
                             rag_result: Optional[RagResult]) -> tuple[str, int]:
-        """Compose a hybrid answer from SQL and RAG results.
-        
-        Args:
-            question: Original question
-            sql_result: SQL query result (optional)
-            rag_result: RAG retrieval result (optional)
-            
-        Returns:
-            Tuple of (composed_answer, composition_time_ms)
+        """Compose a hybrid answer from optional SQL and RAG results.
+
+        If both results are available, an LLM is used to synthesize a coherent
+        answer. If only one is available, it is formatted appropriately.
+
+        Parameters
+        ----------
+        question : str
+            The original user question.
+        sql_result : Optional[SqlResult]
+            The result from the SQL tool.
+        rag_result : Optional[RagResult]
+            The result from the RAG tool.
+
+        Returns
+        -------
+        tuple[str, int]
+            A tuple containing the composed answer string and the composition
+            time in milliseconds.
+
         """
         start_time = time.time()
         
@@ -96,8 +141,20 @@ class AnswerComposer:
             return fallback_answer, composition_time
             
     def _format_sql_only_answer(self, sql_result: SqlResult) -> str:
-        """Format SQL-only answer with results table."""
-        
+        """Format a SQL-only answer, including a markdown table of results.
+
+        Parameters
+        ----------
+        sql_result : SqlResult
+            The result from the SQL tool.
+
+        Returns
+        -------
+        str
+            A formatted string containing a summary, a markdown table of the
+            results (if any), and the SQL query used.
+
+        """
         if not sql_result.rows:
             return f"No data found. Query executed successfully but returned no results.\n\n**SQL used:**\n```sql\n{sql_result.sql_used}\n```"
             
@@ -122,7 +179,21 @@ class AnswerComposer:
         return "\n".join(answer_parts)
         
     def _format_table(self, rows: List[tuple], columns: List[str]) -> str:
-        """Format rows as a markdown table."""
+        """Format a list of tuples into a markdown table.
+
+        Parameters
+        ----------
+        rows : List[tuple]
+            The data rows to format.
+        columns : List[str]
+            The header columns for the table.
+
+        Returns
+        -------
+        str
+            A string representing the data in a markdown table format.
+
+        """
         if not rows:
             return "No data"
             
@@ -140,8 +211,23 @@ class AnswerComposer:
         return "\n".join(table_lines)
         
     def _compose_with_llm(self, question: str, sql_result: SqlResult, rag_result: RagResult) -> str:
-        """Use LLM to compose a coherent answer from both results."""
-        
+        """Use an LLM to compose a coherent answer from SQL and RAG results.
+
+        Parameters
+        ----------
+        question : str
+            The original user question.
+        sql_result : SqlResult
+            The result from the SQL tool.
+        rag_result : RagResult
+            The result from the RAG tool.
+
+        Returns
+        -------
+        str
+            The synthesized answer from the language model.
+
+        """
         # Format SQL data for the prompt
         sql_summary = f"SQL Results ({sql_result.row_count} rows):\n"
         if sql_result.rows:
@@ -181,14 +267,15 @@ Policy/Document Information:
 Please provide a comprehensive answer that combines both the quantitative data and policy information. Include the SQL query used and maintain all document citations."""
 
         try:
+            # Choose a faster composition model when the primary model is a reasoning model
+            model_to_use = self.composition_model or ("gpt-4o-mini" if is_reasoning_model(self.model_name) else self.model_name)
             response = self.client.chat.completions.create(
-                model=self.model_name,
+                model=model_to_use,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.1,
-                max_tokens=1200
+                **chat_params_for_model(model_to_use, 1200, temperature=0.1)
             )
             
             return response.choices[0].message.content.strip()
@@ -198,8 +285,23 @@ Please provide a comprehensive answer that combines both the quantitative data a
             raise
             
     def _compose_fallback(self, sql_result: SqlResult, rag_result: RagResult) -> str:
-        """Simple fallback composition without LLM."""
-        
+        """Create a simple fallback composition by concatenating results.
+
+        This method is used if the LLM-based composition fails.
+
+        Parameters
+        ----------
+        sql_result : SqlResult
+            The result from the SQL tool.
+        rag_result : RagResult
+            The result from the RAG tool.
+
+        Returns
+        -------
+        str
+            A simple concatenation of the formatted SQL and RAG results.
+
+        """
         parts = []
         
         # Add data section
@@ -221,30 +323,42 @@ Please provide a comprehensive answer that combines both the quantitative data a
 
 
 class HybridOrchestrator:
-    """Orchestrates parallel execution of SQL and RAG tools."""
+    """Orchestrates parallel execution of SQL and RAG tools for hybrid queries."""
     
-    def __init__(self, sql_tool: SqlTool, rag_tool: RagTool, openai_client: OpenAI, model_name: str = "gpt-5-mini"):
-        """Initialize hybrid orchestrator.
-        
-        Args:
-            sql_tool: SQL tool instance
-            rag_tool: RAG tool instance  
-            openai_client: OpenAI client instance
-            model_name: The OpenAI model to use for generation
+    def __init__(self, sql_tool: SqlTool, rag_tool: RagTool, openai_client: OpenAI, model_name: str = "gpt-5-nano"):
+        """Initialize the HybridOrchestrator.
+
+        Parameters
+        ----------
+        sql_tool : SqlTool
+            An instance of the SQL tool.
+        rag_tool : RagTool
+            An instance of the RAG tool.
+        openai_client : OpenAI
+            An instance of the OpenAI client.
+        model_name : str, optional
+            The name of the OpenAI model to use for answer composition.
+
         """
         self.sql_tool = sql_tool
         self.rag_tool = rag_tool
         self.composer = AnswerComposer(openai_client, model_name=model_name)
         
     def execute_hybrid(self, question: str, routing_decision: RoutingDecision) -> HybridResult:
-        """Execute hybrid query using both SQL and RAG tools.
-        
-        Args:
-            question: User question
-            routing_decision: Router decision with metadata
-            
-        Returns:
-            Combined hybrid result
+        """Execute a hybrid query by running SQL and RAG tools in parallel.
+
+        Parameters
+        ----------
+        question : str
+            The user's question.
+        routing_decision : RoutingDecision
+            The decision object from the router.
+
+        Returns
+        -------
+        HybridResult
+            The combined and composed result from the tool executions.
+
         """
         start_time = time.time()
         logger.info(f"Executing hybrid query: {question[:50]}...")
@@ -276,13 +390,19 @@ class HybridOrchestrator:
         )
         
     def _execute_parallel(self, question: str) -> tuple[Optional[SqlResult], Optional[RagResult], HybridTrace]:
-        """Execute SQL and RAG tools in parallel.
-        
-        Args:
-            question: User question
-            
-        Returns:
-            Tuple of (sql_result, rag_result, trace)
+        """Execute the SQL and RAG tools in parallel using a thread pool.
+
+        Parameters
+        ----------
+        question : str
+            The user's question.
+
+        Returns
+        -------
+        tuple[Optional[SqlResult], Optional[RagResult], HybridTrace]
+            A tuple containing the SQL result, RAG result, and a trace object
+            with execution details and any errors.
+
         """
         sql_result = None
         rag_result = None
@@ -337,7 +457,7 @@ class HybridOrchestrator:
         return sql_result, rag_result, trace
         
     def _execute_sql_safe(self, question: str) -> Optional[SqlResult]:
-        """Execute SQL tool with error handling."""
+        """Execute the SQL tool with error handling to prevent crashes."""
         try:
             return self.sql_tool.execute_question(question)
         except Exception as e:
@@ -345,7 +465,7 @@ class HybridOrchestrator:
             return None
             
     def _execute_rag_safe(self, question: str) -> Optional[RagResult]:
-        """Execute RAG tool with error handling."""
+        """Execute the RAG tool with error handling to prevent crashes."""
         try:
             return self.rag_tool.answer_question(question)
         except Exception as e:
